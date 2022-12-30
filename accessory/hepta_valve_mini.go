@@ -7,6 +7,7 @@ import (
 
 	"go.bug.st/serial/enumerator"
 	"gobot.io/x/gobot/platforms/firmata"
+	"gobot.io/x/gobot/platforms/firmata/client"
 )
 
 var MINI_PWR_GPIO_CFG = 3
@@ -27,14 +28,15 @@ var MINI_LED_GPIO_CFG = [8]int{
 	0,
 	1,
 	8,
-	0 + 14,
-	1 + 14,
-	2 + 14,
-	4 + 14,
+	0 + 18,
+	1 + 18,
+	2 + 18,
+	4 + 18,
 }
 
 type HeptaValveMini struct {
 	PortName       string
+	Header         *EEPROMHeader
 	FirmataAdaptor *firmata.Adaptor
 }
 
@@ -68,7 +70,6 @@ func (hvm *HeptaValveMini) Connect() error {
 		if err != nil {
 			return err
 		}
-		defer firmataAdaptor.Disconnect()
 
 		firmataAdaptor.AddEvent("SysexResponse")
 
@@ -83,8 +84,53 @@ func (hvm *HeptaValveMini) Connect() error {
 			log.Printf("Found an accessory but not the mini-sampler: %s", eepromHeader.DeviceName)
 		}
 
+		hvm.Header = &eepromHeader
 		hvm.FirmataAdaptor = firmataAdaptor
 	}
+	return err
+}
+
+func (hvm *HeptaValveMini) Configure() error {
+	var err error
+	for i, valvePin := range MINI_VALVE_GPIO_CFG {
+
+		ledPin := MINI_LED_GPIO_CFG[i]
+		err = hvm.FirmataAdaptor.Board.SetPinMode(valvePin, client.Output)
+		if err != nil {
+			return err
+		}
+		err = hvm.FirmataAdaptor.Board.SetPinMode(ledPin, client.Output)
+		if err != nil {
+			return err
+		}
+		var level = 0
+		if i == 0 {
+			level = 1
+		}
+
+		hvm.FirmataAdaptor.Board.DigitalWrite(valvePin, level)
+		if err != nil {
+			return err
+		}
+		hvm.FirmataAdaptor.Board.DigitalWrite(ledPin, level)
+		if err != nil {
+			return err
+		}
+	}
+
+	hvm.SetPwrLed(1)
+
+	return err
+}
+
+func (hvm *HeptaValveMini) SetPwrLed(level byte) error {
+	var err error
+	pInt := MINI_PWR_GPIO_CFG
+	pin := fmt.Sprint(pInt)
+
+	log.Printf("Setting PWR LED (pin %s) to %d", pin, level)
+
+	err = hvm.FirmataAdaptor.DigitalWrite(pin, level)
 	return err
 }
 
@@ -95,30 +141,55 @@ func (hvm *HeptaValveMini) SetValve(valveNb int, level byte) error {
 	if err != nil {
 		return err
 	}
+	pInt := MINI_VALVE_GPIO_CFG[valveNb]
+	pin := fmt.Sprint(pInt)
 
-	pin := fmt.Sprint(MINI_VALVE_GPIO_CFG[valveNb])
 	err = hvm.FirmataAdaptor.DigitalWrite(pin, level)
 	return err
 }
 
-func (hvm *HeptaValveMini) ToggleValve(valveNb int) error {
+func (hvm *HeptaValveMini) SetLED(valveNb int, level byte) error {
 	var err error
 
 	err = checkValveNumber(valveNb)
 	if err != nil {
 		return err
 	}
+	pInt := MINI_LED_GPIO_CFG[valveNb]
+	pin := fmt.Sprint(pInt)
 
-	pin := fmt.Sprint(MINI_VALVE_GPIO_CFG[valveNb])
-	val, err := hvm.FirmataAdaptor.DigitalRead(pin)
+	err = hvm.FirmataAdaptor.DigitalWrite(pin, level)
+	return err
+}
+
+func (hvm *HeptaValveMini) SetValveAndLED(valveNb int, level byte) error {
+	var err error
+	err = hvm.SetValve(valveNb, level)
 	if err != nil {
 		return err
 	}
-	if val == -1 {
-		err = fmt.Errorf("error reading current state of valve %d (pin %s)", valveNb, pin)
+	err = hvm.SetLED(valveNb, level)
+	if err != nil {
+		return err
 	}
-	level := byte(val ^ 1)
-	err = hvm.FirmataAdaptor.DigitalWrite(pin, level)
+	return err
+}
+
+func (hvm *HeptaValveMini) SwitchToValve(valveNb int) error {
+	var err error
+	err = hvm.SetValveAndLED(valveNb, 1)
+	if err != nil {
+		return err
+	}
+	for i := 0; i < hvm.Header.NbValves; i++ {
+		if i == valveNb {
+			continue
+		}
+		err = hvm.SetValveAndLED(i, 0)
+		if err != nil {
+			return err
+		}
+	}
 	return err
 }
 
